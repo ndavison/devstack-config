@@ -1,0 +1,168 @@
+heat_template_version: 2013-05-23
+
+description: >
+  A HOT template that holds a VM instance.
+  
+parameters:
+    key_name:
+        type: string
+        constraints:
+          - custom_constraint: nova.keypair
+      
+    flavor:
+        type: string
+        default: m1.small
+        constraints:
+          - custom_constraint: nova.flavor
+      
+    image:
+        type: string
+        constraints:
+          - custom_constraint: glance.image
+    
+    instance_count:
+        type: number
+        default: 1
+        
+resources:
+
+    secgroup_web:
+        type: OS::Neutron::SecurityGroup
+        properties:
+            rules:
+              - remote_ip_prefix: 0.0.0.0/0
+                protocol: tcp
+                port_range_min: 22
+                port_range_max: 22
+              - remote_ip_prefix: 10.0.0.0/24
+                protocol: tcp
+                port_range_min: 80
+                port_range_max: 80
+    
+    secgroup_db:
+        type: OS::Neutron::SecurityGroup
+        properties:
+            rules:
+              - remote_ip_prefix: 0.0.0.0/0
+                protocol: tcp
+                port_range_min: 22
+                port_range_max: 22
+              - remote_ip_prefix: 10.0.0.0/24
+                protocol: tcp
+                port_range_min: 3306
+                port_range_max: 3306
+
+    lb_web:
+        type: OS::Neutron::LoadBalancer
+        properties:
+            protocol_port: 80
+            pool_id: { get_resource: lbpool_web }
+  
+    lb_db:
+        type: OS::Neutron::LoadBalancer
+        properties:
+            protocol_port: 3306
+            pool_id: { get_resource: lbpool_db }
+        
+    lbpool_web:
+        type: OS::Neutron::Pool
+        properties:
+            lb_method: ROUND_ROBIN
+            protocol: HTTP
+            subnet: { get_resource: subnet }
+            vip:
+              protocol_port: 80
+    
+    lbpool_db:
+        type: OS::Neutron::Pool
+        properties:
+            lb_method: ROUND_ROBIN
+            protocol: TCP
+            subnet: { get_resource: subnet }
+            vip:
+              address: 10.0.0.100
+              protocol_port: 3306
+              subnet: { get_resource: subnet }
+        
+    lbpoolmember_web:
+        type: OS::Neutron::PoolMember
+        properties:
+            pool_id: { get_resource: lbpool_web }
+            address: { get_attr: [ instance_web_01, networks, network, 0 ] }
+            protocol_port: 80
+    
+    lbpoolmember_db:
+        type: OS::Neutron::PoolMember
+        properties:
+            pool_id: { get_resource: lbpool_db }
+            address: { get_attr: [ instance_db_01, networks, network, 0 ] }
+            protocol_port: 3306
+    
+    network:
+        type: OS::Neutron::Net
+        properties:
+            name: network
+        
+    subnet:
+        type: OS::Neutron::Subnet
+        properties:
+            cidr: 10.0.0.0/24
+            dns_nameservers: [ 192.168.0.1 ]
+            enable_dhcp: true
+            allocation_pools:
+                - start: 10.0.0.20
+                  end: 10.0.0.99
+            network: { get_resource: network }
+        
+    router:
+        type: OS::Neutron::Router
+        properties:
+            external_gateway_info:
+                network: public
+        
+    router_int:
+        type: OS::Neutron::RouterInterface
+        properties:
+            router_id: { get_resource: router }
+            subnet_id: { get_resource: subnet }
+        
+    port_web_01:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_resource: network }
+            security_groups: [ { get_resource: secgroup_web } ]
+    
+    port_db_01:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_resource: network }
+            security_groups: [ { get_resource: secgroup_db } ]
+        
+    floatingip:
+        type: OS::Neutron::FloatingIP
+        properties:
+            floating_network: public
+            port_id: { get_attr: [ lbpool_web, vip, port_id ] }
+              
+    instance_web_01:
+        type: OS::Nova::Server
+        properties:
+            key_name: { get_param: key_name }
+            image: { get_param: image }
+            flavor: { get_param: flavor }
+            networks:
+                - port: { get_resource: port_web_01 }
+                
+    instance_db_01:
+        type: OS::Nova::Server
+        properties:
+            key_name: { get_param: key_name }
+            image: { get_param: image }
+            flavor: { get_param: flavor }
+            networks:
+                - port: { get_resource: port_db_01 }
+
+outputs:
+  instance_networks:
+    description: The IP addresses of the LB VIP
+    value: { get_attr: [ floatingip, floating_ip_address ] }
